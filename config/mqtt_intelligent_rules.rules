@@ -1,0 +1,252 @@
+alert tcp any any <> any 1889 (
+    msg:"[MEDIUM] Dangerous File Operation Detected - rm -rf pattern";
+    content:"|30|";
+    content:"rm -rf", nocase;
+    pcre:"/rm\s+-rf/i";
+    sid:1002003;
+    rev:1;
+    priority:3;
+    classtype:attempted-dos;
+    metadata:policy security-ips;
+)
+
+alert tcp any any <> any 1889 (
+    msg:"[MEDIUM] Dangerous File Operation Detected - rm -f pattern";
+    content:"|30|";
+    content:"rm -f", nocase;
+    pcre:"/rm\s+-f/i";
+    sid:1002004;
+    rev:1;
+    priority:3;
+    classtype:attempted-dos;
+    metadata:policy security-ips;
+)
+
+alert tcp any any <> any 1889 (
+    msg:"[MEDIUM] Dangerous File Operation Detected - delete all files";
+    content:"|30|";
+    content:"rm *", nocase;
+    sid:1002005;
+    rev:1;
+    priority:3;
+    classtype:attempted-dos;
+    metadata:policy security-ips;
+)
+
+alert tcp any any <> any 1889 (
+    msg:"[MEDIUM] Network Activity Detected - Network Command (Flag 9)";
+    content:"|30|";
+    pcre:"/(wget|curl|fetch|nc|netcat|ncat|telnet|ssh|scp|rsync|ftp|sftp|tftp|nmap|masscan|zmap|tcpdump|wireshark|tshark)\s+/i";
+    sid:1002006;
+    rev:1;
+    priority:3;
+    classtype:attempted-user;
+    metadata:policy security-ips, category network;
+)
+
+alert tcp any any <> any 1889 (
+    msg:"[MEDIUM] Reverse Shell Pattern Detected - bash -i";
+    content:"|30|";
+    pcre:"/bash\s+-i/i";
+    sid:1002009;
+    rev:1;
+    priority:3;
+    classtype:shellcode-detect;
+    metadata:policy security-ips;
+)
+
+alert tcp any any <> any 1889 (
+    msg:"[MEDIUM] Reverse Shell Pattern Detected - /dev/tcp";
+    content:"|30|";
+    content:"/dev/tcp", nocase;
+    sid:1002010;
+    rev:1;
+    priority:3;
+    classtype:shellcode-detect;
+    metadata:policy security-ips;
+)
+
+alert tcp any any <> any 1889 (
+    msg:"[MEDIUM] Reverse Shell Pattern Detected - nc -e";
+    content:"|30|";
+    pcre:"/nc\s+.*-e/i";
+    sid:1002011;
+    rev:1;
+    priority:3;
+    classtype:shellcode-detect;
+    metadata:policy security-ips;
+)
+
+alert tcp any any <> any 1889 (
+    msg:"[MEDIUM] Reverse Shell Pattern Detected - netcat reverse shell";
+    content:"|30|";
+    pcre:"/nc.*\d+\.\d+\.\d+\.\d+.*\d+/i";
+    sid:1002012;
+    rev:1;
+    priority:3;
+    classtype:shellcode-detect;
+    metadata:policy security-ips;
+)
+
+alert tcp any any <> any 1889 (
+    msg:"[MEDIUM] System Modification Command - chmod 777";
+    content:"|30|";
+    content:"chmod 777", nocase;
+    sid:1002013;
+    rev:1;
+    priority:3;
+    classtype:attempted-user;
+    metadata:policy security-ips;
+)
+
+alert tcp any any <> any 1889 (
+    msg:"[MEDIUM] System Modification Command - chmod +x";
+    content:"|30|";
+    content:"chmod +x", nocase;
+    sid:1002014;
+    rev:1;
+    priority:3;
+    classtype:attempted-user;
+    metadata:policy security-ips;
+)
+
+alert tcp any any <> any 1889 (
+    msg:"[MEDIUM] System Modification Command - systemctl";
+    content:"|30|";
+    content:"systemctl", nocase;
+    pcre:"/systemctl\s+(stop|disable|mask)/i";
+    sid:1002015;
+    rev:1;
+    priority:3;
+    classtype:attempted-user;
+    metadata:policy security-ips;
+)
+
+alert tcp any any <> any 1889 (
+    msg:"[MEDIUM] Process Manipulation - killall";
+    content:"|30|";
+    content:"killall", nocase;
+    sid:1002016;
+    rev:1;
+    priority:3;
+    classtype:attempted-user;
+    metadata:policy security-ips;
+)
+
+alert tcp any any <> any 1889 (
+    msg:"[MEDIUM] Process Manipulation - pkill";
+    content:"|30|";
+    content:"pkill", nocase;
+    sid:1002017;
+    rev:1;
+    priority:3;
+    classtype:attempted-user;
+    metadata:policy security-ips;
+)
+
+alert tcp any any <> any 1889 (
+    msg:"[MEDIUM] Scripting Activity Detected - Scripting Command (Flag 2)";
+    content:"|30|";
+    pcre:"/(bash|sh|zsh|fish|csh|tcsh|python|python3|perl|ruby|node|php|awk|sed|grep|cut|sort|uniq|if|for|while|case|function|\.sh|\.py|\.pl|\.rb|\.js)\s*/i";
+    sid:1002018;
+    rev:1;
+    priority:3;
+    classtype:attempted-user;
+    metadata:policy security-ips, category scripting;
+)
+
+alert tcp any any <> any 1889 (
+    msg:"[MEDIUM] Data Exfiltration Pattern - base64 encode";
+    content:"|30|";
+    pcre:"/base64.*encode/i";
+    sid:1002020;
+    rev:1;
+    priority:3;
+    classtype:attempted-user;
+    metadata:policy security-ips;
+)
+
+alert tcp any any <> any 1889 (
+    msg:"[MEDIUM] Data Exfiltration Pattern - tar archive";
+    content:"|30|";
+    pcre:"/tar.*\.(tar|gz|bz2)/i";
+    sid:1002021;
+    rev:1;
+    priority:3;
+    classtype:attempted-user;
+    metadata:policy security-ips;
+)
+
+alert tcp any any <> any 1889 (
+    msg:"[INFO] MQTT PUBLISH Packet Detected";
+    content:"|30|";
+    sid:1002022;
+    rev:1;
+    priority:4;
+    classtype:policy-violation;
+    metadata:policy security-ips;
+)
+
+alert tcp any any <> any 8883 (
+    msg:"[INFO] MQTT PUBLISH Packet Detected (TLS)";
+    content:"|30|";
+    sid:1002023;
+    rev:1;
+    priority:4;
+    classtype:policy-violation;
+    metadata:policy security-ips;
+)
+
+alert tcp any any <> any 1889 (
+    msg:"[INFO] MQTT CONNECT Packet Detected";
+    content:"|10|";
+    sid:1002024;
+    rev:1;
+    priority:4;
+    classtype:policy-violation;
+    metadata:policy security-ips;
+)
+
+alert tcp any any <> any 1889 (
+    msg:"[INFO] MQTT DISCONNECT Packet Detected";
+    content:"|E0|";
+    sid:1002025;
+    rev:1;
+    priority:4;
+    classtype:policy-violation;
+    metadata:policy security-ips;
+)
+
+alert tcp any any <> any 8883 (
+    msg:"[MEDIUM] Dangerous File Operation Detected (TLS) - rm -rf pattern";
+    content:"|30|";
+    content:"rm -rf", nocase;
+    pcre:"/rm\s+-rf/i";
+    sid:1002026;
+    rev:1;
+    priority:3;
+    classtype:attempted-dos;
+    metadata:policy security-ips;
+)
+
+alert tcp any any <> any 8883 (
+    msg:"[MEDIUM] Network Activity Detected (TLS) - Network Command (Flag 9)";
+    content:"|30|";
+    pcre:"/(wget|curl|fetch|nc|netcat|ncat|telnet|ssh|scp|rsync|ftp|sftp|tftp|nmap|masscan|zmap|tcpdump|wireshark|tshark)\s+/i";
+    sid:1002027;
+    rev:1;
+    priority:3;
+    classtype:attempted-user;
+    metadata:policy security-ips, category network;
+)
+
+alert tcp any any <> any 8883 (
+    msg:"[MEDIUM] Reverse Shell Pattern Detected (TLS) - bash -i";
+    content:"|30|";
+    pcre:"/bash\s+-i/i";
+    sid:1002028;
+    rev:1;
+    priority:3;
+    classtype:shellcode-detect;
+    metadata:policy security-ips;
+)
