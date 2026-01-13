@@ -1,0 +1,1202 @@
+#!/bin/bash
+
+# Reconstructed mqttlive script
+
+# Function to get all available interfaces
+get_available_interfaces() {
+    # Get all network interfaces that are UP
+    ip link show | grep -E "^[0-9]+:" | awk -F': ' '{print $2}' | awk '{print $1}'
+}
+
+# Function to check if interface exists
+interface_exists() {
+    local iface="$1"
+    ip link show "$iface" >/dev/null 2>&1
+}
+
+# Function to get interface IP
+get_interface_ip() {
+    local iface="$1"
+    ip addr show "$iface" 2>/dev/null | grep "inet " | head -1 | awk '{print $2}' | cut -d'/' -f1
+}
+
+# Function to show available interfaces
+show_available_interfaces() {
+    echo "🔍 Available interfaces:"
+    local count=1
+    
+    # Get all interfaces
+    while IFS= read -r iface; do
+        if [ -n "$iface" ]; then
+            local ip=$(get_interface_ip "$iface")
+            if [ "$iface" = "lo" ]; then
+                echo "  $count) $iface (127.0.0.1) - Loopback"
+            elif [ -n "$ip" ]; then
+                echo "  $count) $iface ($ip) - Network Interface"
+            else
+                echo "  $count) $iface - Network Interface"
+            fi
+            ((count++))
+        fi
+    done < <(get_available_interfaces)
+    
+    echo ""
+    return $count
+}
+
+# Default values
+MODE="localhost"
+INTERFACE=""
+PORT="1883"
+VERBOSE=false
+SHOW_HELP=false
+LIST_INTERFACES=false
+
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -h|--help)
+            SHOW_HELP=true
+            shift
+            ;;
+        -n|--network)
+            MODE="network"
+            shift
+            ;;
+        -H|--host)
+            MODE="host"
+            shift
+            ;;
+        -i|--intercept)
+            MODE="intercept"
+            shift
+            ;;
+        -l|--localhost)
+            MODE="localhost"
+            shift
+            ;;
+        -p|--port)
+            PORT="$2"
+            shift 2
+            ;;
+        -v|--verbose)
+            VERBOSE=true
+            shift
+            ;;
+        --list-interfaces)
+            LIST_INTERFACES=true
+            shift
+            ;;
+        --debug)
+            DEBUG_MODE=true
+            shift
+            ;;
+        -*)
+            echo "❌ Unknown option: $1"
+            echo "Use -h or --help for usage information"
+            exit 1
+            ;;
+        *)
+            if [ -z "$INTERFACE" ]; then
+                INTERFACE="$1"
+            else
+                echo "❌ Multiple interfaces specified. Use only one interface."
+                exit 1
+            fi
+            shift
+            ;;
+    esac
+done
+
+# Show help if requested
+if [ "$SHOW_HELP" = true ]; then
+    echo "🚀 MQTT Live - Global Command Executor"
+    echo "======================================"
+    echo ""
+    echo "USAGE:"
+    echo "  mqttlive [options] [interface]"
+    echo ""
+    echo "MODES:"
+    echo "  Local Mode (default):  mqttlive [interface]           # Localhost MQTT broker"
+    echo "  Network Mode:          mqttlive --network [interface] # Network MQTT broker"
+    echo "  Host Mode:             mqttlive --host [interface]    # Host MQTT broker for external devices"
+    echo "  Intercept Mode:        mqttlive --intercept [interface] # Intercept existing MQTT traffic"
+    echo ""
+    echo "OPTIONS:"
+    echo "  -h, --help             Show this help message"
+    echo "  -n, --network          Network mode - bind to all interfaces (0.0.0.0)"
+    echo "  -H, --host             Host mode - act as MQTT broker for external devices"
+    echo "  -i, --intercept        Intercept mode - monitor existing MQTT traffic"
+    echo "  -l, --localhost        Localhost mode (default) - use 127.0.0.1"
+    echo "  -p, --port PORT        MQTT port (default: 1883)"
+    echo "  -v, --verbose          Verbose output"
+    echo "  --list-interfaces      List available interfaces and exit"
+    echo ""
+    echo "EXAMPLES:"
+    echo "  mqttlive                                    # Interactive interface selection (localhost)"
+    echo "  mqttlive lo                                 # Use loopback interface (localhost)"
+    echo "  mqttlive --network wlp3s0                   # Network mode on WiFi interface"
+    echo "  mqttlive --host wlx1005014f82a8             # Host MQTT broker for external devices"
+    echo "  mqttlive --intercept wlp3s0                 # Intercept MQTT traffic on WiFi"
+    echo "  mqttlive --port 1884 wlp3s0                 # Use custom port"
+    echo "  mqttlive --list-interfaces                  # List available interfaces"
+    echo ""
+    echo "DESCRIPTION:"
+    echo "  MQTT Live is a comprehensive MQTT command execution system that can:"
+    echo "  • Host MQTT brokers for external devices to connect to"
+    echo "  • Intercept and monitor existing MQTT traffic on the network"
+    echo "  • Execute commands received via MQTT with full security analysis"
+    echo "  • Support both localhost and network-wide operation"
+    echo "  • Provide real-time command execution and monitoring"
+    echo ""
+    exit 0
+fi
+
+# List interfaces if requested
+if [ "$LIST_INTERFACES" = true ]; then
+    echo "🔍 Available Network Interfaces:"
+    echo "================================"
+    show_available_interfaces
+    exit 0
+fi
+
+echo "🚀 MQTT Live - Global Command Executor"
+echo "======================================"
+echo "Mode: $MODE"
+if [ "$VERBOSE" = true ]; then
+    echo "Verbose: Enabled"
+fi
+echo "Port: $PORT"
+echo ""
+
+# Create centralized session with structured folders
+echo "📁 Creating centralized session structure..."
+SESSION_DIR_NAME="$(date +%Y-%m-%d_%H-%M-%S)"
+
+# Universal script directory detection - always use script location
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export PROJECT_DIR="$SCRIPT_DIR"
+
+# Verify essential file exists
+if [ ! -f "$SCRIPT_DIR/snort_mqtt_enhanced.py" ]; then
+    echo "❌ Error: snort_mqtt_enhanced.py not found in $SCRIPT_DIR"
+    echo "   Make sure you're running mqttlive from the project root directory"
+    exit 1
+fi
+
+# Use Python session manager to create structured folders
+SESSION_LOG_DIR=$(python3 << PYEOF
+import sys
+import os
+
+SCRIPT_DIR = "$SCRIPT_DIR"
+SESSION_DIR_NAME = "$SESSION_DIR_NAME"
+
+# Add multiple possible paths for session_manager
+possible_paths = [
+    os.getcwd(),
+    SCRIPT_DIR if SCRIPT_DIR else None,
+]
+
+# Filter out None and non-existent paths
+for path in possible_paths:
+    if path and os.path.exists(path) and path not in sys.path:
+        sys.path.insert(0, path)
+
+try:
+    from session_manager import SessionManager
+    
+    # Determine base directory (use logs in script directory)
+    if SCRIPT_DIR:
+        base_dir = os.path.join(SCRIPT_DIR, "logs")
+    else:
+        base_dir = os.path.abspath("logs")
+    
+    manager = SessionManager(base_dir=base_dir)
+    session_dir = manager.create_session()  # Unified logging - no session name needed
+    # Print only the directory path to stdout (other messages go to stderr)
+    print(session_dir, end='')
+    sys.stdout.flush()
+except ImportError as e:
+    import sys
+    print(f"⚠️  Failed to import session_manager: {e}", file=sys.stderr)
+    # Fallback: use unified logs directory (no per-session directories)
+    base_dir = "logs"
+    if SCRIPT_DIR:
+        base_dir = os.path.join(SCRIPT_DIR, "logs")
+    session_dir = base_dir  # Unified: just use logs directory
+    os.makedirs(session_dir, exist_ok=True)
+    # Create subdirectories for pcap, exports, scans only
+    for subdir in ["exports", "pcap", "scans"]:
+        os.makedirs(os.path.join(session_dir, subdir), exist_ok=True)
+    print(session_dir, end='')
+    sys.stdout.flush()
+except Exception as e:
+    import sys
+    print(f"⚠️  Error creating session: {e}", file=sys.stderr)
+    # Fallback: use unified logs directory (no per-session directories)
+    base_dir = "logs"
+    if SCRIPT_DIR:
+        base_dir = os.path.join(SCRIPT_DIR, "logs")
+    session_dir = base_dir  # Unified: just use logs directory
+    os.makedirs(session_dir, exist_ok=True)
+    # Create subdirectories for pcap, exports, scans only
+    for subdir in ["exports", "pcap", "scans"]:
+        os.makedirs(os.path.join(session_dir, subdir), exist_ok=True)
+    print(session_dir, end='')
+    sys.stdout.flush()
+PYEOF
+)
+
+# Clean up any newlines or extra whitespace
+SESSION_LOG_DIR=$(echo "$SESSION_LOG_DIR" | tr -d '\n\r' | xargs)
+
+# Validate SESSION_LOG_DIR is not empty
+if [ -z "$SESSION_LOG_DIR" ] || [ ! -d "$SESSION_LOG_DIR" ]; then
+    echo "⚠️  Session directory creation failed, using fallback..."
+    # Unified logging: use logs directory directly (no per-session subdirectories)
+    if [ -n "$SCRIPT_DIR" ]; then
+        SESSION_LOG_DIR="$SCRIPT_DIR/logs"
+    else
+        SESSION_LOG_DIR="logs"
+    fi
+    mkdir -p "$SESSION_LOG_DIR"/{exports,pcap,scans}
+    chmod 755 "$SESSION_LOG_DIR" 2>/dev/null || sudo chmod 755 "$SESSION_LOG_DIR" 2>/dev/null
+    sudo chown -R "$USER:$USER" "$SESSION_LOG_DIR" 2>/dev/null || true
+fi
+
+# Ensure directory exists and set permissions
+mkdir -p "$SESSION_LOG_DIR"/{exports,pcap,scans}
+chmod 755 "$SESSION_LOG_DIR" 2>/dev/null || sudo chmod 755 "$SESSION_LOG_DIR" 2>/dev/null
+# Set ownership to current user so files are accessible
+sudo chown -R "$USER:$USER" "$SESSION_LOG_DIR" 2>/dev/null || true
+
+echo "📁 Unified logging system initialized: $SESSION_LOG_DIR"
+echo "📊 Database: $SESSION_LOG_DIR/session.db (ONE database for ALL test runs)"
+echo "📁 Structure:"
+echo "   - session.db (unified database - append mode)"
+echo "   - alert_fast, alert_json, alert_csv (unified alert files - append mode)"
+echo "   - *.log (unified log files - append mode with date/time stamps)"
+echo "   - exports/ (Excel & SQL exports)"
+echo "   - pcap/ (PCAP files)"
+echo "   - scans/ (Scan results)"
+echo ""
+
+# If no interface is provided, go into interactive mode
+if [ -z "$INTERFACE" ]; then
+    echo "🚀 MQTT Live - Interactive Setup"
+    echo "================================"
+    echo ""
+
+    # Show available interfaces
+    echo "🔍 Available Network Interfaces:"
+    echo "================================"
+    show_available_interfaces
+    total_interfaces=$?
+
+    echo "📋 Select Interface:"
+    while true; do
+        read -p "Enter choice (1-$((total_interfaces-1))): " choice
+        
+        if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -lt "$total_interfaces" ]; then
+            iface_list=($(get_available_interfaces))
+            index=$((choice - 1))
+            INTERFACE="${iface_list[$index]}"
+            echo "✅ Selected Interface: $INTERFACE"
+            break
+        else
+            echo "❌ Invalid choice. Please enter a number between 1 and $((total_interfaces-1))"
+        fi
+    done
+
+    echo ""
+    echo "🎯 Select Operation Mode:"
+    echo "========================="
+    echo "1) 🏠 Localhost Mode    - MQTT broker for local use only"
+    echo "2) 🏢 Host Mode         - MQTT broker for external devices"
+    echo "3) 🌐 Network Mode      - MQTT broker on all interfaces"
+    echo "4) 🕵️  Intercept Mode   - Monitor existing MQTT traffic"
+    echo ""
+
+    while true; do
+        read -p "Enter mode choice (1-4): " mode_choice
+        
+        case "$mode_choice" in
+            1)
+                MODE="localhost"
+                echo "✅ Selected: Localhost Mode"
+                break
+                ;;
+            2)
+                MODE="host"
+                echo "✅ Selected: Host Mode - External devices can connect"
+                break
+                ;;
+            3)
+                MODE="network"
+                echo "✅ Selected: Network Mode - All interfaces"
+                break
+                ;;
+            4)
+                MODE="intercept"
+                echo "✅ Selected: Intercept Mode - Monitor existing traffic"
+                break
+                ;;
+            *)
+                echo "❌ Invalid choice. Please enter a number between 1 and 4"
+                ;;
+        esac
+    done
+fi
+
+# Get interface IP for display
+INTERFACE_IP=$(get_interface_ip "$INTERFACE")
+if [ "$INTERFACE" = "lo" ]; then
+    INTERFACE_IP="127.0.0.1"
+fi
+
+echo ""
+echo "📊 Configuration Summary:"
+echo "========================="
+echo "📡 Interface: $INTERFACE"
+if [ -n "$INTERFACE_IP" ]; then
+    echo "🌐 IP Address: $INTERFACE_IP"
+fi
+echo "🎯 Mode: $MODE"
+echo "🔌 Port: $PORT"
+echo ""
+
+# Start the system
+echo "🚀 Starting MQTT Live System..."
+echo "==============================="
+echo ""
+
+# Cleanup any existing processes first
+echo "🧹 Cleaning up any existing processes..."
+pkill -f "ai_decision_server.py" 2>/dev/null
+pkill -f "device_profiler.py" 2>/dev/null
+pkill -f "snort_mqtt_enhanced.py" 2>/dev/null
+pkill -f "snortlive.sh" 2>/dev/null
+# Kill processes on port 9998
+lsof -ti:9998 | xargs -r kill -9 2>/dev/null
+fuser -k 9998/tcp 2>/dev/null
+sleep 2
+echo "✅ Cleanup complete"
+
+# Clear Python caches to prevent stale code issues
+echo "🧹 Clearing Python caches..."
+find "$SCRIPT_DIR" -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null
+find "$SCRIPT_DIR" -name "*.pyc" -delete 2>/dev/null
+echo "✅ Cache cleared"
+echo ""
+
+# Determine PID file location based on user
+if [ "$EUID" -eq 0 ]; then
+    # Running as root/sudo - use /tmp with proper permissions
+    PID_DIR="/tmp"
+    ROUTER_PID_FILE="$PID_DIR/mqttlive_router.pid"
+    MOSQUITTO_PID_FILE="$PID_DIR/mqttlive_mosquitto.pid"
+    SNORT_PID_FILE="$PID_DIR/mqttlive_snort.pid"
+    EXECUTOR_PID_FILE="$PID_DIR/mqttlive_executor.pid"
+    AI_SERVER_PID_FILE="$PID_DIR/mqttlive_ai_server.pid" # AI Server PID
+    DEVICE_PROFILER_PID_FILE="$PID_DIR/mqttlive_device_profiler.pid" # Device Profiler PID
+    ROUTER_SCANNER_PID_FILE="$PID_DIR/mqttlive_router_scanner.pid" # Router Scanner PID
+else
+    # Running as normal user - use home directory
+    PID_DIR="$HOME"
+    ROUTER_PID_FILE="$PID_DIR/.mqttlive_router.pid"
+    MOSQUITTO_PID_FILE="$PID_DIR/.mqttlive_mosquitto.pid"
+    SNORT_PID_FILE="$PID_DIR/.mqttlive_snort.pid"
+    EXECUTOR_PID_FILE="$PID_DIR/.mqttlive_executor.pid"
+    AI_SERVER_PID_FILE="$PID_DIR/.mqttlive_ai_server.pid" # AI Server PID
+    DEVICE_PROFILER_PID_FILE="$PID_DIR/.mqttlive_device_profiler.pid" # Device Profiler PID
+    ROUTER_SCANNER_PID_FILE="$PID_DIR/.mqttlive_router_scanner.pid" # Router Scanner PID
+fi
+
+# --- AI Integration ---
+ML_DIR="$SCRIPT_DIR/ML related things files"
+
+# Detect venv Python path (universal)
+# Use system python3 (global installation, no venv)
+VENV_PYTHON="python3"
+
+start_ai_server() {
+    local interface_ip="$1"
+    echo "🚀 Starting AI Decision Server on IP: $interface_ip..."
+    
+    # Kill any existing AI server processes
+    pkill -f "ai_decision_server.py" 2>/dev/null
+    sleep 1
+    
+    # Check if port 9998 is still in use
+    if lsof -ti:9998 >/dev/null 2>&1 || fuser 9998/tcp >/dev/null 2>&1; then
+        echo "⚠️  Port 9998 is in use, killing processes..."
+        lsof -ti:9998 | xargs -r kill -9 2>/dev/null
+        fuser -k 9998/tcp 2>/dev/null
+        sleep 2
+    fi
+    
+    if [ ! -f "$ML_DIR/ai_decision_server.py" ]; then
+        echo "❌ Error: AI Decision Server script not found at $ML_DIR/ai_decision_server.py"
+        return 1
+    fi
+    # CRITICAL: Export SESSION_LOG_DIR so AI server knows where session.db is located
+    SESSION_LOG_DIR="$SESSION_LOG_DIR" "$VENV_PYTHON" "$ML_DIR/ai_decision_server.py" --ip "$interface_ip" > "$SESSION_LOG_DIR/ai_server_console.log" 2>&1 &
+    AI_SERVER_PID=$!
+    if [ -n "$AI_SERVER_PID" ] && [ -n "$AI_SERVER_PID_FILE" ]; then
+        echo "$AI_SERVER_PID" > "$AI_SERVER_PID_FILE" 2>/dev/null || true
+    fi
+    echo "✅ AI Decision Server started with PID: $AI_SERVER_PID"
+    
+    # Wait for AI server to be ready (check if port is listening)
+    echo "⏳ Waiting for AI server to initialize..."
+    local max_wait=30
+    local waited=0
+    while [ $waited -lt $max_wait ]; do
+        if lsof -ti:9998 >/dev/null 2>&1 || ss -tlnp 2>/dev/null | grep -q ":9998"; then
+            echo "✅ AI server is ready (port 9998 listening)"
+            sleep 2  # Give it a bit more time to fully initialize
+            return 0
+        fi
+        sleep 1
+        waited=$((waited + 1))
+        echo -n "."
+    done
+    echo ""
+    echo "⚠️  Warning: AI server may not be fully ready yet"
+}
+
+start_device_profiler() {
+    local interface_ip="$1"
+    echo "📡 Starting Device Profiler for IP: $interface_ip..."
+    
+    # Kill any existing device profiler processes
+    pkill -f "device_profiler.py" 2>/dev/null
+    sleep 1
+    
+    if [ ! -f "$ML_DIR/device_profiler.py" ]; then
+        echo "❌ Error: Device Profiler script not found at $ML_DIR/device_profiler.py"
+        return 1
+    fi
+    
+    # Wait a moment to ensure AI server is ready
+    echo "⏳ Waiting for AI server to be ready before starting profiler..."
+    sleep 3
+    
+    "$VENV_PYTHON" "$ML_DIR/device_profiler.py" --ip "$interface_ip" --host-ip "$interface_ip" > "$SESSION_LOG_DIR/device_profiler_console.log" 2>&1 &
+    DEVICE_PROFILER_PID=$!
+    echo "$DEVICE_PROFILER_PID" > "$DEVICE_PROFILER_PID_FILE"
+    echo "✅ Device Profiler started with PID: $DEVICE_PROFILER_PID"
+}
+# --- End AI Integration ---
+
+# SCRIPT_DIR already set above with universal detection
+echo "📁 Project directory: $SCRIPT_DIR"
+
+# Change to the script directory
+cd "$SCRIPT_DIR"
+
+# Determine MQTT host based on mode
+case "$MODE" in
+    "localhost")
+        MQTT_HOST="127.0.0.1"
+        echo "🏠 Localhost Mode: MQTT broker accessible locally only"
+        ;;
+    "network")
+        MQTT_HOST="0.0.0.0"
+        echo "🌐 Network Mode: MQTT broker accessible on all interfaces"
+        ;;
+    "host")
+        if [ "$INTERFACE" = "lo" ]; then
+            MQTT_HOST="127.0.0.1"
+        else
+            MQTT_HOST=$(get_interface_ip "$INTERFACE")
+            if [ -z "$MQTT_HOST" ]; then
+                MQTT_HOST="127.0.0.1"
+                echo "⚠️  Could not get IP for interface $INTERFACE, using localhost"
+            fi
+        fi
+        echo "🏢 Host Mode: MQTT broker for external devices at $MQTT_HOST"
+        ;;
+    "intercept")
+        if [ "$INTERFACE" = "lo" ]; then
+            MQTT_HOST="127.0.0.1"
+        else
+            MQTT_HOST=$(get_interface_ip "$INTERFACE")
+            if [ -z "$MQTT_HOST" ]; then
+                MQTT_HOST="127.0.0.1"
+                echo "⚠️  Could not get IP for interface $INTERFACE, using localhost"
+            fi
+        fi
+        echo "🕵️  Intercept Mode: Monitoring MQTT traffic on $INTERFACE"
+        ;;
+    *)
+        MQTT_HOST="127.0.0.1"
+        echo "⚠️  Unknown mode '$MODE', defaulting to localhost"
+        ;;
+esac
+
+echo "🌐 MQTT Broker: $MQTT_HOST:$PORT"
+echo ""
+
+# Prepare Python script arguments
+PYTHON_ARGS="--interface $INTERFACE --host $MQTT_HOST --port $PORT"
+
+if [ "$VERBOSE" = true ]; then
+    PYTHON_ARGS="$PYTHON_ARGS --verbose"
+fi
+
+# Add mode-specific arguments
+case "$MODE" in
+    "network")
+        PYTHON_ARGS="$PYTHON_ARGS --network-mode"
+        ;;
+    "host")
+        PYTHON_ARGS="$PYTHON_ARGS --host-mode"
+        ;;
+    "intercept")
+        PYTHON_ARGS="$PYTHON_ARGS --intercept-mode"
+        ;;
+esac
+
+# --- Initial Network Scan (MUST COMPLETE BEFORE ACCEPTING MESSAGES) ---
+echo "🔍 Step 0: Performing Initial Network Scan..."
+echo "===================================="
+echo "⏳ This MUST complete before accepting MQTT messages..."
+INITIAL_SCAN_COMPLETE=false
+SCAN_FLAG_FILE="$SCRIPT_DIR/.initial_scan_complete"
+
+# Remove old flag file if exists
+rm -f "$SCAN_FLAG_FILE"
+
+# Check if MAC scanner is available
+if [ -f "$SCRIPT_DIR/mac_based_scanner.py" ]; then
+    echo "📡 Scanning all devices on network (this may take a moment)..."
+    
+    # Run initial scan SYNCHRONOUSLY (wait for completion)
+    # First scan own IP address, then scan all devices
+    python3 << PYEOF
+import sys
+import os
+import socket
+script_dir = "$SCRIPT_DIR"
+interface_ip = "$INTERFACE_IP"
+sys.path.insert(0, script_dir)
+
+try:
+    from mac_based_scanner import MACBasedScanner
+    
+    print("🔗 Connecting to router...")
+    scanner = MACBasedScanner()
+    
+    # Scan all devices (own IP will be scanned first automatically)
+    print("📡 Reading ARP table and scanning all devices...")
+    print(f"   🎯 Own IP ({interface_ip}) will be scanned first...")
+    devices = scanner.get_all_devices_initial_scan(own_ip=interface_ip if interface_ip and interface_ip != "127.0.0.1" else None)
+    
+    print(f"✅ Initial scan complete: {len(devices)} devices scanned")
+    scanner.close()
+    
+    # Write completion flag
+    flag_file = os.path.join(script_dir, ".initial_scan_complete")
+    with open(flag_file, 'w') as f:
+        f.write("complete")
+    
+    print("✅ Scan flag written - system ready to accept messages")
+except Exception as e:
+    print(f"⚠️  Initial scan error: {e}")
+    import traceback
+    traceback.print_exc()
+    # Write flag anyway to prevent blocking
+    flag_file = os.path.join(script_dir, ".initial_scan_complete")
+    with open(flag_file, 'w') as f:
+        f.write("error")
+PYEOF
+    
+    # Verify scan completed
+    if [ -f "$SCAN_FLAG_FILE" ]; then
+        INITIAL_SCAN_COMPLETE=true
+        echo "✅ Initial network scan completed successfully"
+        rm -f "$SCAN_FLAG_FILE"  # Clean up flag file
+    else
+        echo "⚠️  Scan flag not found, but continuing..."
+        INITIAL_SCAN_COMPLETE=true
+    fi
+else
+    echo "ℹ️  MAC scanner not available, skipping initial scan"
+    INITIAL_SCAN_COMPLETE=true
+fi
+echo ""
+
+# Configure Mosquitto based on mode
+echo "🔧 Step 1: Configuring MQTT Router..."
+echo "===================================="
+case "$MODE" in
+    "localhost")
+        echo "📡 Starting MQTT Router on localhost..."
+        pkill mosquitto 2>/dev/null
+        pkill -f "mqtt_router.py" 2>/dev/null
+        pkill -f "snort_mqtt_enhanced.py" 2>/dev/null
+        sudo lsof -ti:1883 | xargs -r sudo kill -9 2>/dev/null
+        sleep 3
+        
+        if [ -f "mqtt_router.py" ]; then
+            echo "✅ Starting MQTT Message Splitter..."
+            echo "📁 Database will be saved to: $SESSION_LOG_DIR/session.db"
+            if [ "$DEBUG_MODE" = true ]; then
+                echo "🐛 DEBUG MODE: Running mqtt_router.py in the foreground..."
+                SESSION_LOG_DIR="$SESSION_LOG_DIR" python3 mqtt_router.py --host 127.0.0.1 --port 1883
+            else
+                SESSION_LOG_DIR="$SESSION_LOG_DIR" python3 mqtt_router.py --host 127.0.0.1 --port 1883 &
+                ROUTER_PID=$!
+                echo "$ROUTER_PID" > "$ROUTER_PID_FILE"
+                sleep 3
+                echo "✅ MQTT Message Splitter running on localhost:1883"
+            fi
+        else
+            echo "⚠️  Splitter not found, using Mosquitto"
+            mosquitto -c "$SCRIPT_DIR/mosquitto_network.conf" -p 1883 &
+            MOSQUITTO_PID=$!
+            echo "$MOSQUITTO_PID" > "$MOSQUITTO_PID_FILE"
+            echo "✅ MQTT broker running on localhost:1883"
+        fi
+        ;;
+    "network"|"host")
+        echo "📡 Starting MQTT Router on all interfaces..."
+        pkill mosquitto 2>/dev/null
+        pkill -f "mqtt_router.py" 2>/dev/null
+        pkill -f "snort_mqtt_enhanced.py" 2>/dev/null
+        sudo lsof -ti:1883 | xargs -r sudo kill -9 2>/dev/null
+        sleep 3
+        
+        if [ -f "mqtt_router.py" ]; then
+            echo "✅ Starting MQTT Message Splitter..."
+            echo "📁 Database will be saved to: $SESSION_LOG_DIR/session.db"
+            if [ "$DEBUG_MODE" = true ]; then
+                echo "🐛 DEBUG MODE: Running mqtt_router.py in the foreground..."
+                SESSION_LOG_DIR="$SESSION_LOG_DIR" python3 mqtt_router.py --host 0.0.0.0 --port 1883
+            else
+                SESSION_LOG_DIR="$SESSION_LOG_DIR" python3 mqtt_router.py --host 0.0.0.0 --port 1883 &
+                ROUTER_PID=$!
+                echo "$ROUTER_PID" > "$ROUTER_PID_FILE"
+                sleep 3
+                echo "✅ MQTT Message Splitter running on all interfaces (0.0.0.0:1883)"
+            fi
+        else
+            echo "⚠️  Splitter not found, using default Mosquitto"
+            mosquitto -d
+            sleep 2
+            echo "✅ MQTT broker started"
+        fi
+        ;;
+    "intercept")
+        echo "🕵️  Intercept mode - monitoring existing MQTT traffic"
+        echo "ℹ️  Note: This mode monitors traffic, not hosting a broker"
+        pkill mosquitto 2>/dev/null
+        pkill -f "mqtt_router.py" 2>/dev/null
+        pkill -f "snort_mqtt_enhanced.py" 2>/dev/null
+        sudo lsof -ti:1883 | xargs -r sudo kill -9 2>/dev/null
+        sleep 2
+        ;;
+    *)
+        echo "🏠 Localhost mode - using existing Mosquitto configuration"
+        echo "✅ MQTT broker ready for local connections"
+        ;;
+esac
+echo ""
+
+# Start SnortLive for interface monitoring
+echo "🔍 Step 2: Starting Network Monitoring..."
+echo "======================================="
+echo "📡 Interface: $INTERFACE"
+
+# Check for snortlive.sh in script directory or PATH
+if [ -f "$SCRIPT_DIR/snortlive.sh" ] || command -v snortlive.sh >/dev/null 2>&1 || command -v snortlive >/dev/null 2>&1; then
+    SNORTLIVE_CMD=""
+    if [ -f "$SCRIPT_DIR/snortlive.sh" ]; then
+        SNORTLIVE_CMD="$SCRIPT_DIR/snortlive.sh"
+    elif command -v snortlive.sh >/dev/null 2>&1; then
+        SNORTLIVE_CMD="snortlive.sh"
+    elif command -v snortlive >/dev/null 2>&1; then
+        SNORTLIVE_CMD="snortlive"
+    fi
+    
+    echo "✅ SnortLive found ($SNORTLIVE_CMD), starting packet capture..."
+    # Start SnortLive in background to monitor the interface
+    if [ "$DEBUG_MODE" = true ]; then
+        echo "🐛 DEBUG MODE: Running snortlive in the foreground..."
+        "$SNORTLIVE_CMD" --interface "$INTERFACE" --mqtt-full --log-dir "$SESSION_LOG_DIR"  # Unified logging: alert files append to unified location
+    else
+        case "$MODE" in
+                    "intercept")
+                        echo "🕵️  Intercept Mode: Monitoring existing MQTT traffic on $INTERFACE"
+                        echo "🔍 Using '$INTERFACE' interface to capture traffic"
+                        # Unified logging: alert files go directly to SESSION_LOG_DIR (append mode)
+                        # Snort will write alert_fast, alert_json, alert_csv to unified location
+                        mkdir -p "$SESSION_LOG_DIR"
+                        # Set permissions so user can access files (Snort runs as root)
+                        chmod 755 "$SESSION_LOG_DIR" 2>/dev/null || sudo chmod 755 "$SESSION_LOG_DIR" 2>/dev/null
+                        sudo chown -R "$USER:$USER" "$SESSION_LOG_DIR" 2>/dev/null || true
+                        
+                        # Unified logging: Snort writes to SESSION_LOG_DIR directly (alert files append)
+                        stdbuf -oL -eL "$SNORTLIVE_CMD" --interface "$INTERFACE" --mqtt-full --log-dir "$SESSION_LOG_DIR" --pcap > "$SESSION_LOG_DIR/snort_console.log" 2>&1 &
+                        SNORT_PID=$!
+                        
+                        # Start background process to fix permissions on ALL files as they're created
+                        # This ensures user can access logs, pcaps, and alerts without root
+                        (
+                            while kill -0 $SNORT_PID 2>/dev/null; do 
+                                sleep 5
+                                # Fix alert files (unified location)
+                                sudo chmod 644 "$SESSION_LOG_DIR"/alert_* 2>/dev/null
+                                sudo chown "$USER:$USER" "$SESSION_LOG_DIR"/alert_* 2>/dev/null
+                                # Fix log files
+                                sudo chmod 644 "$SESSION_LOG_DIR"/*.log 2>/dev/null
+                                sudo chown "$USER:$USER" "$SESSION_LOG_DIR"/*.log 2>/dev/null
+                                # Fix pcaps (if any)
+                                if [ -d "$SESSION_LOG_DIR/pcap" ]; then
+                                    sudo chmod 644 "$SESSION_LOG_DIR/pcap"/* 2>/dev/null
+                                    sudo chown "$USER:$USER" "$SESSION_LOG_DIR/pcap"/* 2>/dev/null
+                                fi
+                                # Fix database
+                                if [ -f "$SESSION_LOG_DIR/session.db" ]; then
+                                    sudo chmod 666 "$SESSION_LOG_DIR/session.db" 2>/dev/null
+                                    sudo chown "$USER:$USER" "$SESSION_LOG_DIR/session.db" 2>/dev/null
+                                fi
+                            done
+                        ) &
+                        ;;
+                    *)
+                        echo "📡 Monitoring MQTT traffic on $INTERFACE"
+                        echo "🔍 Using '$INTERFACE' interface to capture traffic"
+                        # Unified logging: alert files go directly to SESSION_LOG_DIR (append mode)
+                        # Snort will write alert_fast, alert_json, alert_csv to unified location
+                        mkdir -p "$SESSION_LOG_DIR"
+                        # Set permissions so user can access files (Snort runs as root)
+                        chmod 755 "$SESSION_LOG_DIR" 2>/dev/null || sudo chmod 755 "$SESSION_LOG_DIR" 2>/dev/null
+                        sudo chown -R "$USER:$USER" "$SESSION_LOG_DIR" 2>/dev/null || true
+                        
+                        # Unified logging: Snort writes to SESSION_LOG_DIR directly (alert files append)
+                        stdbuf -oL -eL "$SNORTLIVE_CMD" --interface "$INTERFACE" --mqtt-full --log-dir "$SESSION_LOG_DIR" --pcap > "$SESSION_LOG_DIR/snort_console.log" 2>&1 &
+                        SNORT_PID=$!
+                        
+                        # Start background process to fix permissions on ALL files as they're created
+                        # This ensures user can access logs, pcaps, and alerts without root
+                        (
+                            while kill -0 $SNORT_PID 2>/dev/null; do 
+                                sleep 5
+                                # Fix alert files (unified location)
+                                sudo chmod 644 "$SESSION_LOG_DIR"/alert_* 2>/dev/null
+                                sudo chown "$USER:$USER" "$SESSION_LOG_DIR"/alert_* 2>/dev/null
+                                # Fix log files
+                                sudo chmod 644 "$SESSION_LOG_DIR"/*.log 2>/dev/null
+                                sudo chown "$USER:$USER" "$SESSION_LOG_DIR"/*.log 2>/dev/null
+                                # Fix pcaps (if any)
+                                if [ -d "$SESSION_LOG_DIR/pcap" ]; then
+                                    sudo chmod 644 "$SESSION_LOG_DIR/pcap"/* 2>/dev/null
+                                    sudo chown "$USER:$USER" "$SESSION_LOG_DIR/pcap"/* 2>/dev/null
+                                fi
+                                # Fix database
+                                if [ -f "$SESSION_LOG_DIR/session.db" ]; then
+                                    sudo chmod 666 "$SESSION_LOG_DIR/session.db" 2>/dev/null
+                                    sudo chown "$USER:$USER" "$SESSION_LOG_DIR/session.db" 2>/dev/null
+                                fi
+                            done
+                        ) &
+                        ;;        esac
+        # Wait for Snort to fully initialize (AppID loading can take time)
+        echo "⏳ Waiting for Snort to initialize (this may take 30-60 seconds)..."
+        sleep 5
+        # Check if Snort process is still running (not crashed)
+        if ! kill -0 $SNORT_PID 2>/dev/null; then
+            echo "❌ Snort process died during startup. Check $SESSION_LOG_DIR/snort_console.log for errors."
+        else
+            echo "✅ SnortLive started (PID: $SNORT_PID)"
+            echo "✅ Network monitoring active (including localhost traffic)"
+        fi
+        
+        # Start PCAP capture using tshark/dumpcap (parallel to Snort)
+        echo "📦 Step 2.5: Starting PCAP Capture..."
+        echo "====================================="
+        PCAP_DIR="$SESSION_LOG_DIR/pcap"
+        mkdir -p "$PCAP_DIR"
+        chmod 755 "$PCAP_DIR" 2>/dev/null || sudo chmod 755 "$PCAP_DIR" 2>/dev/null
+        sudo chown -R "$USER:$USER" "$PCAP_DIR" 2>/dev/null || true
+        
+        if command -v dumpcap >/dev/null 2>&1 || command -v tshark >/dev/null 2>&1; then
+            PCAP_FILE="${PCAP_DIR}/mqtt_capture_$(date +%Y%m%d_%H%M%S).pcap"
+            LOGS_DIR="$SESSION_LOG_DIR/logs"
+            mkdir -p "$LOGS_DIR"
+            
+            if command -v dumpcap >/dev/null 2>&1; then
+                echo "📦 Starting dumpcap capture..."
+                sudo dumpcap -i "$INTERFACE" \
+                    -f "tcp port 1883 or tcp port 8883" \
+                    -w "$PCAP_FILE" \
+                    -b filesize:100 \
+                    -b files:10 \
+                    -p \
+                    > "$LOGS_DIR/pcap_capture.log" 2>&1 &
+            else
+                echo "📦 Starting tshark capture..."
+                sudo tshark -i "$INTERFACE" \
+                    -f "tcp port 1883 or tcp port 8883" \
+                    -w "$PCAP_FILE" \
+                    -b filesize:100 \
+                    -b files:10 \
+                    > "$LOGS_DIR/pcap_capture.log" 2>&1 &
+            fi
+            PCAP_PID=$!
+            echo "$PCAP_PID" > "$SESSION_LOG_DIR/.pcap_capture.pid"
+            echo "✅ PCAP capture started (PID: $PCAP_PID)"
+            echo "   Output: $PCAP_FILE"
+            echo "   Log: $LOGS_DIR/pcap_capture.log"
+        else
+            echo "⚠️  Wireshark (dumpcap/tshark) not found - PCAP capture disabled"
+            echo "   Install with: sudo apt install wireshark-common"
+            PCAP_PID=""
+        fi
+        echo ""
+        
+        # Start Snort alert logger to database (AFTER Snort is running)
+        if [ -f "$SCRIPT_DIR/snort_alert_logger.py" ]; then
+            ALERT_LOGGER_SCRIPT="$SCRIPT_DIR/snort_alert_logger.py"
+            if [ -n "$ALERT_LOGGER_SCRIPT" ]; then
+                echo "📊 Starting Snort alert database logger..."
+                # Alert logger monitors alerts/ directory
+                ALERTS_DIR="$SESSION_LOG_DIR/alerts"
+                LOGS_DIR="$SESSION_LOG_DIR/logs"
+                mkdir -p "$LOGS_DIR"
+                SESSION_LOG_DIR="$SESSION_LOG_DIR" python3 "$ALERT_LOGGER_SCRIPT" "$SESSION_LOG_DIR" > "$LOGS_DIR/snort_alert_logger.log" 2>&1 &
+                ALERT_LOGGER_PID=$!
+                echo "✅ Snort alert logger started (PID: $ALERT_LOGGER_PID)"
+            fi
+        fi
+    fi
+else
+    echo "⚠️  SnortLive not found - interface monitoring disabled"
+    echo "ℹ️  Install SnortLive for full packet monitoring capabilities"
+    SNORT_PID=""
+fi
+echo ""
+
+# Start the MQTT executor
+echo "🎯 Step 3: MQTT Router Ready!"
+echo "====================================="
+echo "🔧 Mode: $MODE"
+echo "📡 Interface: $INTERFACE"
+if [ -n "$INTERFACE_IP" ]; then
+    echo "🌐 IP: $INTERFACE_IP"
+fi
+echo "🔌 Port: $PORT"
+echo ""
+echo "✅ MQTT Router is handling all command execution!"
+echo "📱 Phone Connection Info:"
+echo "   Broker Address: $MQTT_HOST"
+echo "   Port: $PORT"
+echo ""
+
+# --- Router Scanner Integration ---
+echo "🔍 Step 3.5: Router Scanner (Always Enabled)"
+echo "===================================="
+ROUTER_SCANNER_ENABLED=true  # Always enabled by default
+
+# Check if router scanner should be disabled (override)
+# Option 1: Check for router config file with explicit disable
+ROUTER_CONFIG_FILE="$SCRIPT_DIR/router config/router_config.json"
+if [ -f "$ROUTER_CONFIG_FILE" ]; then
+    # Check if explicitly disabled in config
+    if python3 -c "import json; c=json.load(open('$ROUTER_CONFIG_FILE')); exit(0 if c.get('enabled', True) == False else 1)" 2>/dev/null; then
+        ROUTER_SCANNER_ENABLED=false
+        echo "ℹ️  Router scanner disabled via config file"
+    fi
+fi
+
+# Option 2: Check environment variable for explicit disable
+if [ "$ROUTER_SCANNER" = "false" ] || [ "$ROUTER_SCANNER" = "0" ]; then
+    ROUTER_SCANNER_ENABLED=false
+    echo "ℹ️  Router scanner disabled via environment variable"
+fi
+
+if [ "$ROUTER_SCANNER_ENABLED" = true ]; then
+    echo "✅ Router scanner enabled - Starting..."
+    
+    # Kill any existing router scanner processes
+    pkill -f "pull_scanner.py" 2>/dev/null
+    
+    # Start router scanner using router_manager.py
+    ROUTER_CONFIG_FILE="$SCRIPT_DIR/router config/router_config.json"
+    CONFIG_DISABLED=false
+    
+    # Check config file if it exists
+    if [ -f "$ROUTER_CONFIG_FILE" ]; then
+        # Check if explicitly disabled in config
+        if python3 -c "import json; c=json.load(open('$ROUTER_CONFIG_FILE')); exit(0 if c.get('enabled', True) == False else 1)" 2>/dev/null; then
+            CONFIG_DISABLED=true
+            echo "ℹ️  Router scanner disabled in router_config.json (set 'enabled': true to enable)"
+        fi
+    fi
+    
+    # Start router scanner if not disabled by config
+    if [ "$CONFIG_DISABLED" = false ]; then
+        # Try multiple possible locations for router_manager.py
+        ROUTER_MANAGER_PATH=""
+        PULL_SCANNER_PATH=""
+        
+        # Use SCRIPT_DIR (universal)
+        if [ -f "$SCRIPT_DIR/router_manager.py" ]; then
+            ROUTER_MANAGER_PATH="$SCRIPT_DIR/router_manager.py"
+        fi
+        
+        # Check for pull_scanner.py
+        if [ -f "$SCRIPT_DIR/router config/pull_scanner.py" ]; then
+            PULL_SCANNER_PATH="$SCRIPT_DIR/router config/pull_scanner.py"
+        fi
+        
+        if [ -n "$ROUTER_MANAGER_PATH" ]; then
+            if [ "$DEBUG_MODE" = true ]; then
+                echo "🐛 DEBUG MODE: Running router scanner in the foreground..."
+                SESSION_LOG_DIR="$SESSION_LOG_DIR" python3 "$ROUTER_MANAGER_PATH" --start
+            else
+                # CRITICAL: Export SESSION_LOG_DIR so router scanner uses centralized session.db
+                echo "🚀 Starting router scanner from: $ROUTER_MANAGER_PATH"
+                SESSION_LOG_DIR="$SESSION_LOG_DIR" python3 "$ROUTER_MANAGER_PATH" --start &
+                ROUTER_SCANNER_PID=$!
+                echo "$ROUTER_SCANNER_PID" > "$ROUTER_SCANNER_PID_FILE"
+                sleep 2
+                
+                # Verify it started
+                if [ -n "$ROUTER_SCANNER_PID" ] && kill -0 $ROUTER_SCANNER_PID 2>/dev/null; then
+                    echo "✅ Router scanner started (PID: $ROUTER_SCANNER_PID)"
+                    echo "   📊 Integrated with session.db: $SESSION_LOG_DIR/session.db"
+                else
+                    echo "⚠️  Router scanner may have failed to start (check logs)"
+                fi
+            fi
+        elif [ -n "$PULL_SCANNER_PATH" ]; then
+            # Fallback: Start pull_scanner.py directly
+            echo "⚠️  router_manager.py not found, starting pull_scanner.py directly from: $PULL_SCANNER_PATH"
+            SESSION_LOG_DIR="$SESSION_LOG_DIR" python3 "$PULL_SCANNER_PATH" &
+            ROUTER_SCANNER_PID=$!
+            echo "$ROUTER_SCANNER_PID" > "$ROUTER_SCANNER_PID_FILE"
+            sleep 2
+            if [ -n "$ROUTER_SCANNER_PID" ] && kill -0 $ROUTER_SCANNER_PID 2>/dev/null; then
+                echo "✅ Router scanner started (PID: $ROUTER_SCANNER_PID)"
+            else
+                echo "⚠️  Router scanner failed to start"
+            fi
+        else
+            echo "⚠️  Router scanner script not found"
+            echo "   Checked: $SCRIPT_DIR/router_manager.py"
+            echo "   Checked: $SCRIPT_DIR/router config/pull_scanner.py"
+            echo "   This is optional - system will continue without router scanning"
+        fi
+    fi
+else
+    echo "ℹ️  Router scanner disabled (set ROUTER_SCANNER=true or configure router_config.json to enable)"
+fi
+echo ""
+
+echo "💡 System is now monitoring and ready for MQTT commands!"
+echo "   Press Ctrl+C to stop the system"
+
+# Set up cleanup on exit
+cleanup() {
+    echo ""
+    echo "🛑 Shutting down MQTT Live System..."
+    echo "==================================="
+    
+    if [ -f "$DEVICE_PROFILER_PID_FILE" ]; then
+        DEVICE_PROFILER_PID=$(cat "$DEVICE_PROFILER_PID_FILE" 2>/dev/null)
+        if [ -n "$DEVICE_PROFILER_PID" ] && kill -0 $DEVICE_PROFILER_PID 2>/dev/null; then
+            echo "📡 Stopping Device Profiler (PID: $DEVICE_PROFILER_PID)..."
+            kill $DEVICE_PROFILER_PID 2>/dev/null
+            echo "✅ Device Profiler stopped"
+        fi
+        rm -f "$DEVICE_PROFILER_PID_FILE"
+    fi
+
+    if [ -f "$AI_SERVER_PID_FILE" ]; then
+        AI_SERVER_PID=$(cat "$AI_SERVER_PID_FILE" 2>/dev/null)
+        if [ -n "$AI_SERVER_PID" ] && kill -0 $AI_SERVER_PID 2>/dev/null; then
+            echo "🧠 Stopping AI Decision Server (PID: $AI_SERVER_PID)..."
+            kill $AI_SERVER_PID 2>/dev/null
+            echo "✅ AI Decision Server stopped"
+        fi
+        rm -f "$AI_SERVER_PID_FILE"
+    fi
+
+    if [ -f "$ROUTER_PID_FILE" ]; then
+        ROUTER_PID=$(cat "$ROUTER_PID_FILE" 2>/dev/null)
+        if [ -n "$ROUTER_PID" ] && kill -0 $ROUTER_PID 2>/dev/null; then
+            echo "🔌 Stopping MQTT Router (PID: $ROUTER_PID)..."
+            kill $ROUTER_PID 2>/dev/null
+            echo "✅ MQTT Router stopped"
+        fi
+    fi
+    
+    if [ -f "$SNORT_PID_FILE" ]; then
+        SNORT_PID=$(cat "$SNORT_PID_FILE" 2>/dev/null)
+        if [ -n "$SNORT_PID" ] && kill -0 $SNORT_PID 2>/dev/null; then
+            echo "🔍 Stopping SnortLive (PID: $SNORT_PID)..."
+            kill $SNORT_PID 2>/dev/null
+            echo "✅ SnortLive stopped"
+        fi
+        rm -f "$SNORT_PID_FILE"
+    fi
+    
+    # Stop PCAP capture
+    if [ -f "$SESSION_LOG_DIR/.pcap_capture.pid" ]; then
+        PCAP_PID=$(cat "$SESSION_LOG_DIR/.pcap_capture.pid" 2>/dev/null)
+        if [ -n "$PCAP_PID" ] && kill -0 $PCAP_PID 2>/dev/null; then
+            echo "📦 Stopping PCAP capture (PID: $PCAP_PID)..."
+            sudo kill $PCAP_PID 2>/dev/null
+            sleep 1
+            echo "✅ PCAP capture stopped"
+        fi
+        rm -f "$SESSION_LOG_DIR/.pcap_capture.pid"
+    fi
+    
+    if [ -f "$EXECUTOR_PID_FILE" ]; then
+        EXECUTOR_PID=$(cat "$EXECUTOR_PID_FILE" 2>/dev/null)
+        if [ -n "$EXECUTOR_PID" ] && kill -0 $EXECUTOR_PID 2>/dev/null; then
+            echo "🔌 Stopping MQTT Executor (PID: $EXECUTOR_PID)..."
+            kill $EXECUTOR_PID 2>/dev/null
+            echo "✅ MQTT Executor stopped"
+        fi
+        rm -f "$EXECUTOR_PID_FILE"
+    fi
+    
+    if [ -f "$ROUTER_SCANNER_PID_FILE" ]; then
+        ROUTER_SCANNER_PID=$(cat "$ROUTER_SCANNER_PID_FILE" 2>/dev/null)
+        if [ -n "$ROUTER_SCANNER_PID" ] && kill -0 $ROUTER_SCANNER_PID 2>/dev/null; then
+            echo "🔍 Stopping Router Scanner (PID: $ROUTER_SCANNER_PID)..."
+            kill $ROUTER_SCANNER_PID 2>/dev/null
+            echo "✅ Router Scanner stopped"
+        fi
+        rm -f "$ROUTER_SCANNER_PID_FILE"
+    fi
+    
+    SYSTEM_MONITOR_PID_FILE="$PID_DIR/system_monitor.pid"
+    if [ -f "$SYSTEM_MONITOR_PID_FILE" ]; then
+        SYSTEM_MONITOR_PID=$(cat "$SYSTEM_MONITOR_PID_FILE" 2>/dev/null)
+        if [ -n "$SYSTEM_MONITOR_PID" ] && kill -0 $SYSTEM_MONITOR_PID 2>/dev/null; then
+            echo "📊 Stopping System Monitor (PID: $SYSTEM_MONITOR_PID)..."
+            kill $SYSTEM_MONITOR_PID 2>/dev/null
+            echo "✅ System Monitor stopped"
+        fi
+        rm -f "$SYSTEM_MONITOR_PID_FILE"
+    fi
+    
+    # Also kill any remaining router scanner processes
+    pkill -f "pull_scanner.py" 2>/dev/null
+    pkill -f "system_monitor.py" 2>/dev/null
+    
+    pkill -f snort_mqtt_enhanced 2>/dev/null
+    echo "✅ All processes stopped"
+    echo "✅ Shutdown complete"
+    exit 0
+}
+
+trap cleanup SIGINT SIGTERM
+
+echo "🎉 MQTT Live System Ready!"
+echo "========================="
+echo "✅ MQTT Broker: Configured"
+echo "✅ Network Monitoring: Active"
+echo "✅ Command Executor: Starting..."
+echo ""
+
+if [ -z "$INTERFACE_IP" ]; then
+    echo "❌ Critical Error: Could not determine IP for interface '$INTERFACE'. Aborting AI components."
+else
+    echo "🧠 Step 4: Starting AI Decision Server..."
+    echo "======================================="
+    start_ai_server "$INTERFACE_IP"
+    if [ $? -eq 0 ]; then
+        echo ""
+        echo "📡 Step 5: Starting Device Profiler..."
+        echo "====================================="
+        start_device_profiler "$INTERFACE_IP"
+        echo ""
+    else
+        echo "❌ Failed to start AI server, skipping device profiler"
+    fi
+fi
+
+echo "📊 Step 6: Starting System Monitor..."
+echo "====================================="
+SYSTEM_MONITOR_PID_FILE="$PID_DIR/system_monitor.pid"
+if [ -f "system_monitor.py" ]; then
+    echo "📊 Starting comprehensive system monitoring..."
+    echo "   All metrics will be stored in: $SESSION_LOG_DIR/session.db"
+    LOGS_DIR="$SESSION_LOG_DIR/logs"
+    mkdir -p "$LOGS_DIR"
+    SESSION_LOG_DIR="$SESSION_LOG_DIR" python3 system_monitor.py --interval 5 > "$LOGS_DIR/system_monitor.log" 2>&1 &
+    SYSTEM_MONITOR_PID=$!
+    echo "$SYSTEM_MONITOR_PID" > "$SYSTEM_MONITOR_PID_FILE"
+    echo "✅ System Monitor started with PID: $SYSTEM_MONITOR_PID"
+    echo "   📊 CPU, RAM, Network, Physical, Security - ALL in session.db"
+    sleep 2
+else
+    echo "⚠️  System monitor script not found, skipping..."
+fi
+echo ""
+
+echo "📱 PHONE CONNECTION INFO:"
+echo "========================="
+echo "🌐 Broker Address: $MQTT_HOST"
+echo "🔌 Port: $PORT"
+echo "📡 Interface: $INTERFACE"
+if [ -n "$INTERFACE_IP" ]; then
+    echo "🌐 Interface IP: $INTERFACE_IP"
+fi
+echo ""
+echo "💡 Use these settings in EasyMQTT app on your phone!"
+echo "   Press Ctrl+C to stop the system"
+echo ""
+
+echo "🚀 Starting MQTT Command Executor in background..."
+export SESSION_LOG_DIR="$SESSION_LOG_DIR"
+python3 "$SCRIPT_DIR/snort_mqtt_enhanced.py" $PYTHON_ARGS &
+EXECUTOR_PID=$!
+
+echo "$SNORT_PID" > "$SNORT_PID_FILE" 2>/dev/null
+echo "$EXECUTOR_PID" > "$EXECUTOR_PID_FILE" 2>/dev/null
+if [ -n "$DEVICE_PROFILER_PID" ]; then
+    echo "$DEVICE_PROFILER_PID" > "$DEVICE_PROFILER_PID_FILE" 2>/dev/null # Save profiler PID
+fi
+if [ -n "$AI_SERVER_PID" ]; then
+    echo "$AI_SERVER_PID" > "$AI_SERVER_PID_FILE" 2>/dev/null # Save AI server PID
+fi
+
+echo "$SESSION_LOG_DIR" > "$PID_DIR/mqttlive_session_log_dir.txt"
+
+echo "✅ System running in background!"
+echo "📱 Phone Connection Info:"
+echo "   Broker Address: $MQTT_HOST"
+echo "   Port: $PORT"
+echo ""
+echo "💡 System is now monitoring and ready for MQTT commands!"
+echo "   Press Ctrl+C to stop the system"
+echo ""
+
+# --- Clean Terminal Display ---
+echo ""
+echo "🖥️  Starting Clean Terminal Display..."
+echo "==================================="
+echo "📊 Displaying alerts and MQTT traffic in table format"
+echo "🛡️  Snort status monitoring enabled"
+echo ""
+
+# Start clean terminal display (table format)
+python3 "$SCRIPT_DIR/clean_terminal_display.py" "$SESSION_LOG_DIR" &
+DISPLAY_PID=$!
+
+# Wait for the main executor process to finish
+wait $EXECUTOR_PID
+
+# Kill the display process when the main process exits
+kill $DISPLAY_PID 2>/dev/null
+
+cleanup

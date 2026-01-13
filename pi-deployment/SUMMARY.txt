@@ -1,0 +1,25 @@
+✅ RASPBERRY PI DEPLOYMENT FILES
+
+📁 Location: pi-deployment/
+
+This folder contains Pi-optimized versions of the main scripts.
+For most users, the main AstraIPS scripts work fine on Pi.
+
+Files Included:
+✅ mqttlive_pi              - Pi-optimized mqttlive
+✅ snortlive_pi.sh          - Pi-optimized snortlive
+✅ mqtt_final_pi.lua        - Pi-optimized Snort config
+✅ enhanced_ai_inspector_pi.lua - Pi-optimized AI inspector
+
+🎯 Note:
+The main AstraIPS scripts (in project root) now auto-detect paths
+and work on any system including Raspberry Pi. These Pi-specific
+files are kept for reference but usually not needed.
+
+📋 Recommended Approach:
+Just use the main scripts:
+  cd AstraIPS
+  sudo ./installer/install.sh
+  sudo ./mqttlive
+
+The installer handles everything automatically.
