@@ -1,0 +1,9 @@
+{
+    "enabled": false,
+    "router_ip": "",
+    "router_user": "",
+    "router_pass": "",
+    "scan_interval": 5,
+    "auto_start": false,
+    "description": "Router Network Scanner Configuration - Run installer/setup_router.sh to configure"
+}
