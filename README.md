@@ -317,9 +317,9 @@ The system implements graduated response based on device behavior:
 
 | Dataset | Samples | Description |
 |---------|---------|-------------|
-| **Benign** | 5,295 | Normal IoT operations |
-| **Malicious** | 1,475 | Command injection, privilege escalation, data exfiltration |
-| **Total** | 6,770 | 80/20 stratified train/test split |
+| **Benign** | 26,473 | Normal IoT operations |
+| **Malicious** | 7,376 | Command injection, privilege escalation, data exfiltration |
+| **Total** | 33,849 | 80/20 stratified train/test split |
 
 Each sample was **manually reviewed and labeled** by executing in an isolated sandbox environment.
 
