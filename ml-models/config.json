@@ -1,0 +1,11 @@
+{
+    "ipc_socket_path": "/tmp/ai_socket.sock",
+    "profile_listener_ip": "127.0.0.1",
+    "profile_listener_port": 9998,
+    "asset_paths": {
+        "vectorizer_data": "phase1_feature_dataset1111111111 (2).xlsx",
+        "ml_tokenizer": "tokenizer.pickle",
+        "ml_model": "ips_model.tflite"
+    },
+    "max_sequence_length": 100
+}
