@@ -15,7 +15,7 @@
 
 <p align="center">
   <strong>Student:</strong> Lujain Almomani<br>
-  <strong>Supervisor:</strong> Dr. Obada Alkahtib
+  <strong>Supervisor:</strong> Dr. Obada Alkhatib
 </p>
 
 ---
@@ -626,7 +626,7 @@ See `docs/TROUBLESHOOTING.md` for detailed solutions.
 
 This project was developed as a graduation project at the **University of Wollongong in Dubai** for the Bachelor of Engineering in Telecommunication and IoT Engineering program.
 
-**Supervisor:** Dr. Obada Alkahtib
+**Supervisor:** Dr. Obada Alkhatib
 
 ### Open Source Dependencies
 
