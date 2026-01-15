@@ -128,4 +128,4 @@ cd AstraIPS
 **University**: University of Wollongong in Dubai  
 **Program**: Bachelor of Engineering in Telecommunication and IoT Engineering  
 **Student**: Lujain Almomani  
-**Supervisor**: Obada Alkahtib
+**Supervisor**: Obada Alkhatib
